@@ -1,0 +1,21 @@
+domains:
+  allow: ["*"]
+  deny: []
+operations:
+  level0:
+    - browser.navigate
+    - browser.extract
+  level1:
+    - browser.search
+    - browser.click
+    - browser.type
+    - files.search
+    - files.read_text
+    - apps.launch
+    - apps.activate
+  level2:
+    - browser.upload
+    - imessage.send
+    - email.send_draft
+    - files.move
+    - files.rename
