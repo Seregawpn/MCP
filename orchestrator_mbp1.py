@@ -668,20 +668,23 @@ async def run_c6_loop(goal: str, max_steps: int, model_name: str, run_dir: str) 
             
             # Добавляем детали результата
             if isinstance(result_obj, dict):
-              if result_obj.get("status") == "ok":
+              # ИСПРАВЛЕНО: Правильно обрабатываем структуру result_obj
+              actual_result = result_obj.get("result", result_obj)  # Получаем вложенный result или сам объект
+              
+              if actual_result.get("status") == "ok":
                 action_result["success"] = True
-                action_result["details"] = result_obj
+                action_result["details"] = actual_result
                 
                 # Анализируем что именно получилось
-                if "action" in result_obj:
-                  action_result["what_happened"] = result_obj["action"]
-                if "text" in result_obj:
-                  action_result["text_result"] = result_obj["text"][:200]
-                if "url" in result_obj:
-                  action_result["current_url"] = result_obj["url"]
+                if "action" in actual_result:
+                  action_result["what_happened"] = actual_result["action"]
+                if "text" in actual_result:
+                  action_result["text_result"] = actual_result["text"][:200]
+                if "url" in actual_result:
+                  action_result["current_url"] = actual_result["url"]
               else:
                 action_result["success"] = False
-                action_result["error"] = result_obj.get("error", "Unknown error")
+                action_result["error"] = actual_result.get("error", "Unknown error")
             else:
               action_result["success"] = True
               action_result["details"] = str(result_obj)
@@ -724,8 +727,14 @@ async def run_c6_loop(goal: str, max_steps: int, model_name: str, run_dir: str) 
             # Добавляем обновленную информацию о странице в историю для LLM
             try:
               extract_structured = getattr(extract_result, "structuredContent", None)
+              print(f"🔍 DEBUG: extract_result тип: {type(extract_result)}")
+              print(f"🔍 DEBUG: extract_structured: {extract_structured}")
+              
               if isinstance(extract_structured, dict):
                 text_content = extract_structured.get("result", {}).get("text", "")
+                print(f"🔍 DEBUG: text_content длина: {len(text_content) if text_content else 0}")
+                print(f"🔍 DEBUG: text_content первые 200 символов: {repr(text_content[:200]) if text_content else 'None'}")
+                
                 if text_content:
                   # Создаем краткое описание обновленной страницы
                   page_summary = text_content[:500]  # Первые 500 символов
@@ -753,6 +762,9 @@ async def run_c6_loop(goal: str, max_steps: int, model_name: str, run_dir: str) 
                   print(f"🔍 DEBUG: LLM получит обновление страницы: {page_summary[:100]}...")
                 else:
                   print(f"🔍 DEBUG: Текст страницы пустой после действия {logical_name}")
+                  print(f"🔍 DEBUG: extract_structured ключи: {list(extract_structured.keys()) if isinstance(extract_structured, dict) else 'не словарь'}")
+                  if isinstance(extract_structured, dict):
+                    print(f"🔍 DEBUG: extract_structured['result']: {extract_structured.get('result')}")
             except Exception as e:
               write_event(run_dir, {"ts": _now_iso(), "type": "post_action_analysis_error", "error": str(e), "step": step_idx})
               print(f"🔍 DEBUG: Ошибка анализа страницы: {e}")
