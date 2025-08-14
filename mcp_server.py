@@ -1622,28 +1622,78 @@ async def browser_click_text(text: str) -> Dict:
     if page is None:
         return {"status": "error", "error": "browser_not_started"}
     try:
-        # Ищем элемент по точному тексту
-        locator = page.get_by_text(text)
-        element = locator.first
-        if element:
-            await element.click(timeout=5000)
-            return {"status": "ok", "action": "clicked", "text": text}
+        # Стратегия 1: Ищем элемент по точному тексту
+        try:
+            locator = page.get_by_text(text)
+            element = locator.first
+            if element and await element.is_visible():
+                await element.click(timeout=5000)
+                return {"status": "ok", "action": "clicked", "text": text, "method": "exact_text"}
+        except Exception as e:
+            print(f"DEBUG: Ошибка точного поиска: {e}")
         
-        # Если не найдено - ищем по частичному совпадению
-        locator = page.get_by_text(text, exact=False)
-        element = locator.first
-        if element:
-            await element.click(timeout=5000)
-            return {"status": "ok", "action": "clicked", "text": text, "partial_match": True}
+        # Стратегия 2: Ищем по частичному совпадению
+        try:
+            locator = page.get_by_text(text, exact=False)
+            element = locator.first
+            if element and await element.is_visible():
+                await element.click(timeout=5000)
+                return {"status": "ok", "action": "clicked", "text": text, "method": "partial_text"}
+        except Exception as e:
+            print(f"DEBUG: Ошибка частичного поиска: {e}")
         
-        # Если не найдено - ищем по aria-label
-        locator = page.get_by_role("button").filter(has_text=text)
-        element = locator.first
-        if element:
-            await element.click(timeout=5000)
-            return {"status": "ok", "action": "clicked", "text": text, "aria_match": True}
+        # Стратегия 3: Ищем по aria-label
+        try:
+            locator = page.get_by_role("button").filter(has_text=text)
+            element = locator.first
+            if element and await element.is_visible():
+                await element.click(timeout=5000)
+                return {"status": "ok", "action": "clicked", "text": text, "method": "aria_button"}
+        except Exception as e:
+            print(f"DEBUG: Ошибка aria поиска: {e}")
         
-        return {"status": "error", "error": "element_not_found", "text": text}
+        # Стратегия 4: Ищем по любому кликабельному элементу
+        try:
+            # Ищем все элементы с текстом
+            elements = page.locator(f'*:has-text("{text}")').all()
+            for element in elements[:5]:  # Проверяем первые 5
+                try:
+                    if await element.is_visible() and await element.is_enabled():
+                        # Проверяем что элемент кликабельный
+                        tag = await element.evaluate("el => el.tagName.toLowerCase()")
+                        if tag in ['button', 'a', 'input', 'div', 'span']:
+                            await element.click(timeout=5000)
+                            return {"status": "ok", "action": "clicked", "text": text, "method": "generic_search"}
+                except Exception as e:
+                    continue
+        except Exception as e:
+            print(f"DEBUG: Ошибка generic поиска: {e}")
+        
+        # Стратегия 5: JavaScript клик (последний рубеж)
+        try:
+            result = await page.evaluate(f"""
+                () => {{
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (const el of elements) {{
+                        if (el.textContent && el.textContent.includes('{text}') && 
+                            (el.tagName === 'BUTTON' || el.tagName === 'A' || 
+                             el.tagName === 'INPUT' || el.tagName === 'DIV' || 
+                             el.tagName === 'SPAN')) {{
+                            if (el.offsetWidth > 0 && el.offsetHeight > 0) {{
+                                el.click();
+                                return true;
+                            }}
+                        }}
+                    }}
+                    return false;
+                }}
+            """)
+            if result:
+                return {"status": "ok", "action": "clicked", "text": text, "method": "javascript_click"}
+        except Exception as e:
+            print(f"DEBUG: Ошибка JavaScript клика: {e}")
+        
+        return {"status": "error", "error": "element_not_found", "text": text, "tried_methods": ["exact", "partial", "aria", "generic", "javascript"]}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -1739,11 +1789,28 @@ async def browser_click_selector(selector: str) -> Dict:
                 except:
                     continue
         
-        if element:
+        if element and await element.is_visible() and await element.is_enabled():
             await element.click(timeout=5000)
-            return {"status": "ok", "action": "clicked", "selector": selector}
+            return {"status": "ok", "action": "clicked", "selector": selector, "method": "selector_click"}
         else:
-            return {"status": "error", "error": "element_not_found", "selector": selector}
+            # Стратегия 4: JavaScript клик (последний рубеж)
+            try:
+                result = await page.evaluate(f"""
+                    () => {{
+                        const element = document.querySelector('{selector}');
+                        if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {{
+                            element.click();
+                            return true;
+                        }}
+                        return false;
+                    }}
+                """)
+                if result:
+                    return {"status": "ok", "action": "clicked", "selector": selector, "method": "javascript_click"}
+            except Exception as e:
+                print(f"DEBUG: Ошибка JavaScript клика: {e}")
+            
+            return {"status": "error", "error": "element_not_found_or_not_clickable", "selector": selector}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -1800,6 +1867,86 @@ async def browser_type_selector(selector: str, text: str) -> Dict:
 async def browser_extract(mode: str = "summary") -> Dict:
     """Алиас для browser_extract_universal - обратная совместимость"""
     return await browser_extract_universal(mode="adaptive", max_text_length=3000, timeout_ms=8000)
+
+
+@mcp.tool()
+async def browser_check_page_state() -> Dict:
+    """Проверить состояние страницы для диагностики проблем с кликами."""
+    if not _use_playwright():
+        return {"status": "error", "error": "playwright_not_available"}
+    await _BrowserSession.ensure_started()
+    page = _BrowserSession.page()
+    if page is None:
+        return {"status": "error", "error": "browser_not_started"}
+    try:
+        # Получаем информацию о странице
+        url = page.url
+        title = await page.title()
+        
+        # Проверяем состояние DOM
+        dom_state = await page.evaluate("""
+            () => {
+                return {
+                    readyState: document.readyState,
+                    hasBody: !!document.body,
+                    bodyChildren: document.body ? document.body.children.length : 0,
+                    scripts: document.scripts.length,
+                    stylesheets: document.styleSheets.length,
+                    hasErrors: !!document.querySelector('.error, .error-message, [data-error]'),
+                    isLoaded: document.readyState === 'complete'
+                }
+            }
+        """)
+        
+        # Проверяем видимые элементы
+        visible_elements = await page.evaluate("""
+            () => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                const visible = elements.filter(el => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && 
+                           style.visibility !== 'hidden' && 
+                           style.display !== 'none';
+                });
+                
+                return {
+                    total: elements.length,
+                    visible: visible.length,
+                    buttons: visible.filter(el => el.tagName === 'BUTTON').length,
+                    links: visible.filter(el => el.tagName === 'A').length,
+                    inputs: visible.filter(el => el.tagName === 'INPUT').length,
+                    clickable: visible.filter(el => {
+                        const tag = el.tagName.toLowerCase();
+                        return tag === 'button' || tag === 'a' || 
+                               tag === 'input' || el.onclick || 
+                               el.getAttribute('role') === 'button';
+                    }).length
+                }
+            }
+        """)
+        
+        # Проверяем JavaScript ошибки
+        js_errors = await page.evaluate("""
+            () => {
+                if (window.jsErrors) {
+                    return window.jsErrors;
+                }
+                return [];
+            }
+        """)
+        
+        return {
+            "status": "ok",
+            "url": url,
+            "title": title,
+            "dom_state": dom_state,
+            "visible_elements": visible_elements,
+            "js_errors": js_errors,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 if __name__ == "__main__":

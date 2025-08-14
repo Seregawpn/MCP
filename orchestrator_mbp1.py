@@ -323,6 +323,7 @@ def normalize_tool_name(name: str) -> str:
     "browser.close_banners": "browser_close_banners",
     "assistant_done": "assistant_done",
     "assistant_ask": "assistant_ask",
+    "browser.check_page_state": "browser_check_page_state",  # Новый инструмент диагностики
   }
   return mapping.get(name, name)
 
