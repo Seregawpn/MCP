@@ -399,33 +399,321 @@ async def browser_close_banners(
 
 
 @mcp.tool()
-async def browser_extract(mode: str = "summary") -> Dict:
-    """Extract page summary (real DOM summary for mode=summary)."""
+async def browser_extract_universal(
+    mode: str = "adaptive",
+    max_text_length: int = 5000,
+    timeout_ms: int = 10000
+) -> Dict:
+    """100% адаптивное извлечение данных с любой страницы - работает со всеми сайтами"""
     if not _use_playwright():
-        return stub_extract_summary()
+        return {"status": "error", "error": "playwright_not_available"}
     await _BrowserSession.ensure_started()
     page = _BrowserSession.page()
     if page is None:
         return {"status": "error", "error": "browser_not_started"}
+    
     try:
-        # дождаться готовности DOM после возможной навигации
+        # Дожидаемся готовности DOM
         try:
-            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
         except Exception:
-            pass
+            pass  # Продолжаем даже если DOM не готов
+        
+        # УНИВЕРСАЛЬНЫЙ JavaScript для извлечения данных с любого сайта
         script = r"""
-        (()=>{
-          const out = {};
-          out.title = document.title || '';
-          const h1 = Array.from(document.querySelectorAll('h1')).map(n=>n.innerText.trim()).filter(Boolean);
-          const h2 = Array.from(document.querySelectorAll('h2')).map(n=>n.innerText.trim()).filter(Boolean);
-          const ps = Array.from(document.querySelectorAll('p')).map(n=>n.innerText.trim()).filter(Boolean);
-          const text = [h1.slice(0,2).join('\n'), h2.slice(0,3).join('\n'), ps.slice(0,4).join('\n\n')].filter(Boolean).join('\n\n');
-          return { title: out.title, summary: text.slice(0, 1200) };
-        })()
+        (() => {
+          const results = {
+            title: document.title || '',
+            strategies: {},
+            summary: '',
+            metadata: {
+              url: window.location.href,
+              timestamp: new Date().toISOString(),
+              userAgent: navigator.userAgent
+            }
+          };
+          
+          // Функция для очистки и нормализации текста
+          const cleanText = (text) => {
+            if (!text) return '';
+            return text
+              .replace(/\s+/g, ' ')
+              .replace(/\n+/g, '\n')
+              .trim()
+              .slice(0, 1000);  // Ограничиваем длину каждого блока
+          };
+          
+          // Функция для расчета важности элемента
+          const calculateImportance = (element) => {
+            let score = 0;
+            
+            // Проверяем размер элемента
+            const rect = element.getBoundingClientRect();
+            if (rect.width > 100 && rect.height > 30) score += 2;
+            if (rect.width > 200 && rect.height > 50) score += 3;
+            
+            // Проверяем позицию (верх страницы важнее)
+            if (rect.top < window.innerHeight * 0.5) score += 2;
+            
+            // Проверяем семантику
+            const tag = element.tagName.toLowerCase();
+            if (['h1', 'h2', 'h3', 'main', 'article'].includes(tag)) score += 3;
+            if (['h4', 'h5', 'h6', 'section', 'aside'].includes(tag)) score += 2;
+            if (['p', 'div', 'span'].includes(tag)) score += 1;
+            
+            // Проверяем ARIA атрибуты
+            if (element.hasAttribute('aria-label')) score += 2;
+            if (element.hasAttribute('role')) score += 1;
+            
+            return score;
+          };
+          
+          // СТРАТЕГИЯ 1: Семантический анализ (ARIA, роли, атрибуты)
+          const semanticExtract = () => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            const textData = [];
+            
+            for (const el of elements) {
+              const sources = [
+                el.getAttribute('aria-label'),
+                el.getAttribute('aria-describedby'),
+                el.getAttribute('title'),
+                el.getAttribute('placeholder'),
+                el.getAttribute('alt'),
+                el.getAttribute('data-text'),
+                el.getAttribute('data-content'),
+                el.getAttribute('data-testid'),
+                el.getAttribute('data-test'),
+                el.innerText,
+                el.textContent
+              ].filter(Boolean);
+              
+              if (sources.length > 0) {
+                const text = sources.join(' ');
+                if (text.length > 3) {
+                  textData.push({
+                    text: cleanText(text),
+                    element: el.tagName,
+                    importance: calculateImportance(el),
+                    attributes: {
+                      role: el.getAttribute('role'),
+                      'aria-label': el.getAttribute('aria-label'),
+                      class: el.className
+                    }
+                  });
+                }
+              }
+            }
+            
+            return textData.sort((a, b) => b.importance - a.importance);
+          };
+          
+          // СТРАТЕГИЯ 2: Обход всех текстовых узлов
+          const textWalkerExtract = () => {
+            const textNodes = [];
+            const walker = document.createTreeWalker(
+              document.body,
+              NodeFilter.SHOW_TEXT,
+              {
+                acceptNode: (node) => {
+                  const text = node.textContent.trim();
+                  return text.length > 3 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                }
+              }
+            );
+            
+            let node;
+            while (node = walker.nextNode()) {
+              const text = cleanText(node.textContent);
+              if (text) {
+                textNodes.push({
+                  text: text,
+                  element: node.parentElement?.tagName || 'text',
+                  importance: 1
+                });
+              }
+            }
+            
+            return textNodes;
+          };
+          
+          // СТРАТЕГИЯ 3: Анализ интерактивных элементов
+          const interactiveExtract = () => {
+            const selectors = [
+              'button', 'a', 'input', 'textarea', 'select',
+              '[role="button"]', '[role="link"]', '[role="textbox"]',
+              '[tabindex]', '[onclick]', '[onchange]',
+              '.btn', '.button', '.link', '.nav-item'
+            ];
+            
+            const elements = document.querySelectorAll(selectors.join(','));
+            const textData = [];
+            
+            for (const el of elements) {
+              const text = cleanText(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
+              if (text) {
+                textData.push({
+                  text: text,
+                  element: el.tagName,
+                  importance: calculateImportance(el) + 2,  // Интерактивные элементы важнее
+                  interactive: true,
+                  type: el.type || el.getAttribute('role') || 'unknown'
+                });
+              }
+            }
+            
+            return textData;
+          };
+          
+          // СТРАТЕГИЯ 4: Анализ видимого контента
+          const visibleExtract = () => {
+            const visibleElements = [];
+            const allElements = document.querySelectorAll('*');
+            
+            for (const el of allElements) {
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              
+              // Проверяем видимость
+              if (rect.width > 0 && rect.height > 0 && 
+                  style.visibility !== 'hidden' && 
+                  style.display !== 'none' &&
+                  rect.top < window.innerHeight * 2) {  // В пределах 2 экранов
+                
+                const text = cleanText(el.innerText || el.textContent);
+                if (text && text.length > 5) {
+                  visibleElements.push({
+                    text: text,
+                    element: el.tagName,
+                    importance: calculateImportance(el),
+                    visible: true,
+                    area: rect.width * rect.height
+                  });
+                }
+              }
+            }
+            
+            return visibleElements.sort((a, b) => b.area - a.area);
+          };
+          
+          // СТРАТЕГИЯ 5: Fallback - анализ структуры страницы
+          const structureExtract = () => {
+            const structure = {
+              headings: [],
+              paragraphs: [],
+              lists: [],
+              forms: [],
+              navigation: []
+            };
+            
+            // Заголовки
+            document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]').forEach(h => {
+              const text = cleanText(h.innerText);
+              if (text) structure.headings.push({ text, level: h.tagName.slice(1) });
+            });
+            
+            // Параграфы
+            document.querySelectorAll('p, .text, .content, .description').forEach(p => {
+              const text = cleanText(p.innerText);
+              if (text) structure.paragraphs.push({ text });
+            });
+            
+            // Списки
+            document.querySelectorAll('ul, ol, .list, .menu').forEach(list => {
+              const items = Array.from(list.querySelectorAll('li, .item')).map(li => cleanText(li.innerText)).filter(Boolean);
+              if (items.length > 0) structure.lists.push({ items });
+            });
+            
+            // Формы
+            document.querySelectorAll('form, .form, .search').forEach(form => {
+              const inputs = Array.from(form.querySelectorAll('input, textarea, select')).map(input => {
+                return {
+                  type: input.type || input.tagName.toLowerCase(),
+                  placeholder: input.placeholder || '',
+                  label: input.getAttribute('aria-label') || ''
+                };
+              });
+              if (inputs.length > 0) structure.forms.push({ inputs });
+            });
+            
+            // Навигация
+            document.querySelectorAll('nav, .nav, .navigation, .menu, .breadcrumb').forEach(nav => {
+              const links = Array.from(nav.querySelectorAll('a, .link')).map(link => cleanText(link.innerText)).filter(Boolean);
+              if (links.length > 0) structure.navigation.push({ links });
+            });
+            
+            return structure;
+          };
+          
+          // ВЫПОЛНЯЕМ ВСЕ СТРАТЕГИИ
+          try {
+            results.strategies.semantic = semanticExtract();
+            results.strategies.textWalker = textWalkerExtract();
+            results.strategies.interactive = interactiveExtract();
+            results.strategies.visible = visibleExtract();
+            results.strategies.structure = structureExtract();
+          } catch (e) {
+            console.error('Error in extraction strategies:', e);
+          }
+          
+          // СОБИРАЕМ ИТОГОВЫЙ ТЕКСТ
+          const allText = [];
+          
+          // Добавляем заголовки
+          if (results.strategies.structure.headings) {
+            results.strategies.structure.headings.forEach(h => allText.push(h.text));
+          }
+          
+          // Добавляем важные элементы из семантического анализа
+          if (results.strategies.semantic) {
+            results.strategies.semantic.slice(0, 10).forEach(item => allText.push(item.text));
+          }
+          
+          // Добавляем интерактивные элементы
+          if (results.strategies.interactive) {
+            results.strategies.interactive.slice(0, 8).forEach(item => allText.push(item.text));
+          }
+          
+          // Добавляем видимый контент
+          if (results.strategies.visible) {
+            results.strategies.visible.slice(0, 12).forEach(item => allText.push(item.text));
+          }
+          
+          // Убираем дубликаты и создаем итоговый текст
+          const uniqueText = [...new Set(allText)];
+          results.summary = uniqueText.join('\n\n').slice(0, 5000);
+          
+          // Статистика
+          results.stats = {
+            total_elements: document.querySelectorAll('*').length,
+            text_blocks: uniqueText.length,
+            strategies_used: Object.keys(results.strategies).length,
+            total_text_length: results.summary.length
+          };
+          
+          return results;
+        })();
         """
-        res = await page.evaluate(script)
-        return {"status": "ok", **({k: res.get(k) for k in ("title","summary")} if isinstance(res, dict) else {})}
+        
+        # Выполняем JavaScript с таймаутом
+        res = await asyncio.wait_for(page.evaluate(script), timeout=timeout_ms / 1000)
+        
+        if isinstance(res, dict):
+            return {
+                "status": "ok",
+                "title": res.get("title", ""),
+                "summary": res.get("summary", ""),
+                "url": res.get("metadata", {}).get("url", ""),
+                "stats": res.get("stats", {}),
+                "strategies_used": list(res.get("strategies", {}).keys()),
+                "extraction_mode": mode,
+                "timestamp": res.get("metadata", {}).get("timestamp", "")
+            }
+        else:
+            return {"status": "error", "error": "invalid_javascript_result"}
+            
+    except asyncio.TimeoutError:
+        return {"status": "error", "error": f"extraction_timeout_{timeout_ms}ms"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -1506,6 +1794,12 @@ async def browser_type_selector(selector: str, text: str) -> Dict:
             return {"status": "error", "error": "element_not_found", "selector": selector}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
+async def browser_extract(mode: str = "summary") -> Dict:
+    """Алиас для browser_extract_universal - обратная совместимость"""
+    return await browser_extract_universal(mode="adaptive", max_text_length=3000, timeout_ms=8000)
 
 
 if __name__ == "__main__":

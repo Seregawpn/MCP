@@ -313,7 +313,7 @@ def normalize_tool_name(name: str) -> str:
     "browser.find": "browser_find",
     "browser.press": "browser_press",
     "browser.scroll": "browser_scroll",
-    "browser.extract": "browser_extract",
+    "browser.extract": "browser_extract_universal",  # Обновлено на универсальный
     "browser.open_in_new_tab": "browser_open_in_new_tab",
     "browser.switch_tab": "browser_switch_tab",
     "browser.screenshot": "browser_screenshot",
@@ -620,8 +620,8 @@ async def run_c6_loop(goal: str, max_steps: int, model_name: str, run_dir: str) 
 
               # АНАЛИЗ СТРАНИЦЫ: Получаем текстовую информацию для LLM
               try:
-                write_event(run_dir, {"ts": _now_iso(), "type": "post_hook_call", "hook": "auto_extract_text", "args": {"mode": "text"}})
-                extract_result = await asyncio.wait_for(session.call_tool("browser_extract", arguments={"mode": "text"}), timeout=12.0)
+                write_event(run_dir, {"ts": _now_iso(), "type": "post_hook_call", "hook": "auto_extract_text", "args": {"mode": "adaptive"}})
+                extract_result = await asyncio.wait_for(session.call_tool("browser_extract_universal", arguments={"mode": "adaptive", "max_text_length": 5000, "timeout_ms": 12000}), timeout=15.0)
                 write_event(run_dir, {"ts": _now_iso(), "type": "post_hook_result", "hook": "auto_extract_text", "result": {}})
                 
                 # Добавляем текстовую информацию о странице в историю для LLM
@@ -720,8 +720,8 @@ async def run_c6_loop(goal: str, max_steps: int, model_name: str, run_dir: str) 
               except Exception as e:
                 print(f"🔍 DEBUG: Ошибка создания скриншота: {e}")
             
-            write_event(run_dir, {"ts": _now_iso(), "type": "post_action_call", "hook": "auto_extract_text", "args": {"mode": "text"}})
-            extract_result = await asyncio.wait_for(session.call_tool("browser_extract", arguments={"mode": "text"}), timeout=12.0)
+            write_event(run_dir, {"ts": _now_iso(), "type": "post_action_call", "hook": "auto_extract_text", "args": {"mode": "adaptive"}})
+            extract_result = await asyncio.wait_for(session.call_tool("browser_extract_universal", arguments={"mode": "adaptive", "max_text_length": 5000, "timeout_ms": 12000}), timeout=15.0)
             write_event(run_dir, {"ts": _now_iso(), "type": "post_action_result", "hook": "auto_extract_text", "result": {}})
             
             # Добавляем обновленную информацию о странице в историю для LLM
