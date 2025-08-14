@@ -617,7 +617,7 @@ async def run_c6_loop(goal: str, max_steps: int, model_name: str, run_dir: str) 
 
               # Capture screenshot for LLM context
               last_screenshot_path = await maybe_capture_screenshot(session, run_dir, step_idx)
-              
+
               # АНАЛИЗ СТРАНИЦЫ: Получаем текстовую информацию для LLM
               try:
                 write_event(run_dir, {"ts": _now_iso(), "type": "post_hook_call", "hook": "auto_extract_text", "args": {"mode": "text"}})
